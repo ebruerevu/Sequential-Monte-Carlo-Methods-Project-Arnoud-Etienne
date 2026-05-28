@@ -1,0 +1,147 @@
+#96 experiments, 16 for each N= 2^5,2^6,2^7,2^8,2^9,2^10
+#Then 4096 experiments of Bootstrap & Bridge to get estimate of normalising constant z
+#True normalising constant is determined by 2^20 particles of bootstrap
+#MSE(log z^{1:Z})^{-1}*mean(t^{1:Z})^{-1}
+#ESS(z^{1:Z})*mean(t^{1:Z})^{-1}
+
+#parameters 4.1
+theta_1 <- 0.0187
+theta_2 <- 0.2610
+theta_3 <- 0.0224
+theta_ratio <- theta_1 / theta_2
+theta_ratio_2_3 <- theta_3^2/(2 * theta_2)
+
+#Nr. of time steps & step size
+n <- 100 
+dt <- 1/n
+
+steps <- 1:n
+exp_forward <- exp(-theta_2 * dt * steps) #one time step, exp() are expensive to continuously compute
+sigma_vec <- sqrt(theta_ratio_2_3 *(1 - exp(-2 * theta_2 * dt * steps)))
+
+#Known x-values
+x_0 <- 0.07
+x_n <- 0.15
+
+#Z number of experiments comparing bootstrap and bridge
+Z <- 2^12
+#
+
+#Effective sample size
+ESS_fun <- function(w) {
+  (sum(w)^2) / sum(w^2)
+}
+
+#True normalising constant p(x_n | x_0)
+mu_0 <- theta_ratio + (x_0 - theta_ratio)*exp(-theta_2)
+sigma_0 <- sqrt(theta_ratio_2_3 * (1 - exp(-2 * theta_2)) )
+tnc <- dnorm(x_n, mean = mu_0, sd = sigma_0)
+
+#Effective sample size of z^{1:Z}
+ESSt <- function(c,t){
+	(sum(c))^2/(sum(c^2))*t^{-1}
+}
+
+#Mean-squared error of log z^{1:Z}
+MSElog <- function(c,t){
+	1/Z * sum((log(c)-log(tnc))^2)^{-1}*t^-1
+}	
+#
+
+#Now the 96 experiments
+#Storage
+MSElog_time <- matrix(nrow = 2, ncol = 96)
+ESS_time <- matrix(nrow = 2, ncol = 96)
+
+N_values = 2^(5:7)
+experiment_id <- 1
+for (N in N_values){
+h <- N*0.5
+for (r in 1:16){
+	#Bootstrap
+	ncboot <- numeric(Z)
+	boot_time <- system.time({
+	for (s in 1:Z){
+		#Initialise
+		x_cur <- rep(x_0, N)
+		x <- matrix(0, N, n + 1)
+		x[,1] <- x_0
+		x[,n+1] <- x_n
+		w_cur <- rep(1 / N, N)
+  		for (k in 1:(n-1)){
+			w_norm <- w_cur / sum(w_cur) # normalise
+    			
+			#propagate
+			mu_prop <- theta_ratio + (x_cur - theta_ratio) * exp_forward[1] #expectation for the propagation
+			x_new <- rnorm(N, mean = mu_prop, sd   = sigma_vec[1])
+			x[, k + 1] <- x_new
+			x_cur <- x_new #for the next loop
+			
+			remain <- n + 1 - k
+          		mu_future <- theta_ratio +(x_new - theta_ratio) * exp_forward[remain]
+          		w_cur <- dnorm(x_n, mean = mu_future, sd = sigma_vec[remain]) * w_norm  #weight
+		}
+  		ncboot[s] <- sum(w_cur)
+  	}
+	})
+	mean_time_boot <- boot_time[3] / Z
+	MSElog_time[1,experiment_id] <- MSElog(ncboot ,mean_time_boot)
+	ESS_time[1,experiment_id] <- ESSt(ncboot ,mean_time_boot)
+	#Bridge
+	ncbridge <- numeric(Z)
+	bridge_time <- system.time({
+	for (s in 1:Z){
+		x_cur <- rep(x_0, N)
+		x <- matrix(0, N, n + 1)
+		x[,1] <- x_0
+		x[,n+1] <- x_n
+		w_cur <- rep(1 / N, N)
+		a <- matrix(0, N, n + 1)
+		a[,1] <- 1:N
+		for (k in 1:(n-1)){
+			RESS <- ESS_fun(w_cur)
+  			do_resample <- (
+          				RESS < h &&
+          				(k-1) %% 10 == 0
+        		)
+			if (do_resample){
+      			ancestors = sample.int(N, size=N, replace = TRUE, prob=w_cur)
+				a[,k] <- ancestors
+				
+				x_prev <- x_cur[ancestors]
+				
+      			w_prev <- rep(1 / N, N)
+   			}
+			else {
+				a[,k] <- 1:N
+      			x_prev <- x_cur
+
+            		w_prev <- w_cur / sum(w_cur)
+			}
+				# propagate
+          			mu_prop <- theta_ratio + (x_prev - theta_ratio) * exp_forward[1]
+				x_new <- rnorm(N, mean = mu_prop, sd   = sigma_vec[1])
+				x[, k + 1] <- x_new
+				x_cur <- x_new
+				remain <- n + 1 - k
+
+          			mu_future <- theta_ratio + (x_new - theta_ratio) * exp_forward[remain]
+				w_cur <- dnorm(x_n, mean = mu_future, sd   = sigma_vec[remain]) * w_prev
+		}
+		ncbridge[s] <- sum(w_cur)
+	}
+	})
+	mean_time_bridge <- bridge_time[3]/Z
+	MSElog_time[2,experiment_id] <- MSElog(ncbridge ,mean_time_bridge)
+	ESS_time[2,experiment_id] <- ESSt(ncbridge ,mean_time_bridge)
+	cat("Completed experiment:",experiment_id," N =", N,"\n")
+	experiment_id <- experiment_id + 1
+}
+}
+
+#metric plots
+par(mfrow=c(1,2))
+
+plot(MSElog_time[1,],MSElog_time[2,],type = "p", xlim = c(10^-9, 10^-5), ylim = c(10^-9, 10^-5), log = 'xy')
+plot(ESS_time[1,],ESS_time[2,1],type = "p")
+
